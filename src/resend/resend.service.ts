@@ -55,15 +55,37 @@ export class ResendService {
       throw new Error('Invalid signature');
     }
 
-    const payload = JSON.parse(rawBody.toString('utf8')); // Parse manual
+    const payload = JSON.parse(rawBody.toString('utf8'));
     const { type, data } = payload;
 
-    await axios.post(this.discordWebhookUrl, {
-      content: `📬 Evento recebido do Resend: \`${type}\`\n\`\`\`json\n${JSON.stringify(
-        data,
-        null,
-        2,
-      )}\n\`\`\``,
-    });
+    const embed = {
+      title: `📬 Novo evento: \`${type}\``,
+      description: 'Evento recebido via Webhook do Resend',
+      color: 0x0099ff,
+      timestamp: new Date().toISOString(),
+      fields: Object.entries(data).map(([key, value]) => ({
+        name: key,
+        value:
+          typeof value === 'string'
+            ? value
+            : `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``,
+        inline: false,
+      })),
+      footer: {
+        text: 'Resend Webhook • anuness.dev',
+        icon_url: 'https://anuness.dev/favicon.ico',
+      },
+    };
+
+    try {
+      await axios.post(this.discordWebhookUrl, {
+        embeds: [embed],
+      });
+
+      this.logger.log(`✅ Evento ${type} enviado como embed para o Discord.`);
+    } catch (error) {
+      this.logger.error('❌ Erro ao enviar para o Discord:', error);
+      throw error;
+    }
   }
 }
