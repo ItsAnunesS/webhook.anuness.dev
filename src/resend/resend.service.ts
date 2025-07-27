@@ -1,25 +1,16 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+// resend.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import * as crypto from 'crypto';
+import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-import { Webhook } from 'svix';
-
-// Interface para facilitar o manuseio dos dados do webhook
-interface WebhookPayload {
-  headers: Record<string, string>;
-  rawBody: Buffer;
-}
 
 @Injectable()
 export class ResendService {
   private readonly logger = new Logger(ResendService.name);
   private readonly discordWebhookUrl: string;
-  private readonly resendWebhookSecret: string;
+  private readonly signingSecret: string;
 
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly httpService: HttpService,
-  ) {
+  constructor(private readonly configService: ConfigService) {
     const discordUrl = this.configService.get<string>(
       'RESEND_DISCORD_WEBHOOK_URL',
     );
@@ -28,113 +19,51 @@ export class ResendService {
     );
 
     if (!discordUrl || !resendSecret) {
+      this.logger.error(
+        '❌ Variáveis de ambiente RESEND_DISCORD_WEBHOOK_URL e RESEND_WEBHOOK_SIGNING_SECRET não estão definidas',
+      );
       throw new Error(
-        'As variáveis de ambiente DISCORD_WEBHOOK_URL e RESEND_WEBHOOK_SIGNING_SECRET são obrigatórias.',
+        'RESEND_DISCORD_WEBHOOK_URL and RESEND_WEBHOOK_SIGNING_SECRET must be set in environment variables',
       );
     }
 
     this.discordWebhookUrl = discordUrl;
-    this.resendWebhookSecret = resendSecret;
+    this.signingSecret = resendSecret;
   }
 
-  public async handleWebhook({ headers, rawBody }: WebhookPayload) {
-    this.logger.log('Novo webhook do Resend recebido.');
+  verifySignature(signature: string, rawBody: Buffer): boolean {
+    const hmac = crypto
+      .createHmac('sha256', this.signingSecret)
+      .update(rawBody)
+      .digest('hex');
 
-    const payload = this.verifyAndParse(headers, rawBody);
-    this.logger.log(`Webhook verificado com sucesso. Tipo de evento: ${payload.type}`);
+    const signatureBuffer = Buffer.from(signature, 'hex');
+    const hmacBuffer = Buffer.from(hmac, 'hex');
 
-    this.sendToDiscord(payload).catch(err => {
-      this.logger.error('Falha ao enviar mensagem para o Discord.', err.stack);
-    });
-
-    return { message: 'Webhook recebido.' };
-  }
-
-  private verifyAndParse(
-    headers: Record<string, string>,
-    rawBody: Buffer,
-  ): any {
-    try {
-      const wh = new Webhook(this.resendWebhookSecret);
-      const payload = wh.verify(rawBody.toString(), headers);
-      return payload;
-    } catch (err) {
-      this.logger.error('Falha na verificação do webhook:', err.message);
-      throw new UnauthorizedException('Assinatura do webhook inválida.');
+    if (signatureBuffer.length !== hmacBuffer.length) {
+      this.logger.warn(
+        `❌ Tamanhos diferentes: assinatura=${signatureBuffer.length}, hmac=${hmacBuffer.length}`,
+      );
+      return false;
     }
+
+    return crypto.timingSafeEqual(signatureBuffer, hmacBuffer);
   }
 
-  private async sendToDiscord(payload: any): Promise<void> {
+  async processWebhook(signature: string, rawBody: Buffer): Promise<void> {
+    if (!this.verifySignature(signature, rawBody)) {
+      throw new Error('Invalid signature');
+    }
+
+    const payload = JSON.parse(rawBody.toString('utf8')); // Parse manual
     const { type, data } = payload;
 
-    const embed = this.formatDiscordEmbed(type, data);
-
-    if (!embed) {
-      this.logger.warn(`Nenhum formato de embed para o evento ${type}. Ignorando.`);
-      return;
-    }
-
-    const discordPayload = {
-      username: 'Resend Notificações',
-      avatar_url: 'https://avatars.githubusercontent.com/u/124838633?s=200&v=4', // Logo do Resend
-      embeds: [embed],
-    };
-
-    try {
-      await firstValueFrom(
-        this.httpService.post(this.discordWebhookUrl, discordPayload),
-      );
-      this.logger.log(`Notificação do evento ${type} enviada para o Discord.`);
-    } catch (error) {
-      this.logger.error(
-        `Erro ao enviar webhook para o Discord: ${error.message}`,
-        error.response?.data,
-      );
-      throw error;
-    }
-  }
-
-  private formatDiscordEmbed(type: string, data: any) {
-    let title = `Evento de Email: ${type}`;
-    let description = `O email com ID \`${data.email_id}\` foi atualizado.`;
-    let color = 0x808080;
-
-    switch (type) {
-      case 'email.sent':
-        title = '✅ Email Enviado com Sucesso!';
-        description = `O email para **${data.to}** com o assunto "**${data.subject}**" foi enviado.`;
-        color = 0x00FF00;
-        break;
-      case 'email.delivered':
-        title = '🚚 Email Entregue!';
-        description = `O email para **${data.to}** foi entregue com sucesso.`;
-        color = 0x0000FF;
-        break;
-      case 'email.bounced':
-        title = '⚠️ Email com Bounce!';
-        description = `O email para **${data.to}** falhou (bounce). Motivo: ${data.bounce?.description || 'N/A'}`;
-        color = 0xFFA500;
-        break;
-      case 'email.complained':
-        title = '🚫 Reclamação de Spam';
-        description = `O destinatário **${data.to}** marcou o email como spam.`;
-        color = 0xFF0000;
-        break;
-      case 'email.opened':
-        title = '📬 Email Aberto';
-        description = `O destinatário **${data.to}** abriu o email.`;
-        color = 0xFFFF00;
-        break;
-    }
-
-    return {
-      title,
-      description,
-      color,
-      footer: {
-        text: `Resend Email ID: ${data.email_id}`,
-      },
-      timestamp: new Date().toISOString(),
-    };
+    await axios.post(this.discordWebhookUrl, {
+      content: `📬 Evento recebido do Resend: \`${type}\`\n\`\`\`json\n${JSON.stringify(
+        data,
+        null,
+        2,
+      )}\n\`\`\``,
+    });
   }
 }
