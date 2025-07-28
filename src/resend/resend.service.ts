@@ -3,12 +3,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
+import { Webhook } from 'svix';
 
 @Injectable()
 export class ResendService {
   private readonly logger = new Logger(ResendService.name);
   private readonly discordWebhookUrl: string;
   private readonly signingSecret: string;
+  private readonly webhook: Webhook;
 
   constructor(private readonly configService: ConfigService) {
     const discordUrl = this.configService.get<string>(
@@ -29,35 +31,22 @@ export class ResendService {
 
     this.discordWebhookUrl = discordUrl;
     this.signingSecret = resendSecret;
+    this.webhook = new Webhook(this.signingSecret);
   }
 
-  verifySignature(signature: string, rawBody: Buffer): boolean {
-    const hmac = crypto
-      .createHmac('sha256', this.signingSecret)
-      .update(rawBody)
-      .digest('hex');
+  async processWebhook(
+    headers: Record<string, string>,
+    rawBody: Buffer,
+  ): Promise<void> {
+    let payload: any;
 
-    const signatureBuffer = Buffer.from(signature, 'hex');
-    const hmacBuffer = Buffer.from(hmac, 'hex');
-
-    if (signatureBuffer.length !== hmacBuffer.length) {
-      this.logger.warn(
-        `❌ Tamanhos diferentes: assinatura=${signatureBuffer.length}, hmac=${hmacBuffer.length}`,
-      );
-      return false;
-    }
-
-    return crypto.timingSafeEqual(signatureBuffer, hmacBuffer);
-  }
-
-  async processWebhook(signature: string, rawBody: Buffer): Promise<void> {
-    /*
-    if (!this.verifySignature(signature, rawBody)) {
+    try {
+      payload = this.webhook.verify(rawBody.toString('utf8'), headers);
+    } catch (err) {
+      this.logger.warn(`❌ Assinatura inválida: ${err.message}`);
       throw new Error('Invalid signature');
     }
-    */
 
-    const payload = JSON.parse(rawBody.toString('utf8'));
     const { type, data } = payload;
 
     const embed = {

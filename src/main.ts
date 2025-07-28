@@ -1,12 +1,19 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { rawBodyMiddleware } from './common/middleware/raw-body.middleware';
+import * as bodyParser from 'body-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.use('/resend', rawBodyMiddleware);
+  app.use(
+    '/resend',
+    bodyParser.json({
+      verify: (req: any, res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
 
   const config = new DocumentBuilder()
     .setTitle('API de Webhooks - anuness.dev')

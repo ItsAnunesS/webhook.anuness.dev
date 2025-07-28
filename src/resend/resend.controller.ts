@@ -28,8 +28,18 @@ export class ResendController {
     summary: 'Recebe eventos do Resend e repassa para o Discord',
   })
   @ApiHeader({
-    name: 'resend-signature',
-    description: 'Assinatura HMAC-SHA256 enviada pelo Resend',
+    name: 'svix-id',
+    description: 'ID da mensagem do webhook (enviado pelo Resend)',
+    required: true,
+  })
+  @ApiHeader({
+    name: 'svix-timestamp',
+    description: 'Timestamp do webhook (enviado pelo Resend)',
+    required: true,
+  })
+  @ApiHeader({
+    name: 'svix-signature',
+    description: 'Assinatura do webhook (enviado pelo Resend)',
     required: true,
   })
   @ApiBody({
@@ -58,15 +68,14 @@ export class ResendController {
     status: 400,
     description: 'Assinatura inválida ou erro de processamento',
   })
-  async handleResendWebhook(
-    @Headers('resend-signature') signature: string,
-    @Req() req: Request,
-    @Res() res: Response,
-  ) {
+  async handleResendWebhook(@Req() req: Request, @Res() res: Response) {
     const rawBody = (req as any).rawBody as Buffer;
 
     try {
-      await this.resendService.processWebhook(signature, rawBody);
+      await this.resendService.processWebhook(
+        req.headers as Record<string, string>,
+        rawBody,
+      );
       return res.sendStatus(200);
     } catch (error) {
       return res.status(400).send('Invalid signature or processing error.');
